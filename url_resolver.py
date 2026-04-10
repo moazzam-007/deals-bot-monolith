@@ -226,6 +226,11 @@ class URLResolver:
             "myntra": ["myntra.com"],
             "ajio": ["ajio.com"],
             "meesho": ["meesho.com"],
+            "wishlink_others": [
+                "nykaa.com", "nykaafashion.com", 
+                "snapdeal.com", "jiomart.com", 
+                "tatacliq.com", "shopsy.in"
+            ]
         }
         for platform, domains in platform_map.items():
             if _any_domain_matches(domain, domains):

@@ -35,6 +35,9 @@ app = Client(
     in_memory=True # Use in_memory since we use session string
 )
 
+if not CHANNELS:
+    logger.warning("No CHANNELS configured! Bot will not monitor any channel.")
+
 # ------------------------------------------------------------------
 # 1. Server for Render Pinging (Prevents 15m spin-down if deployed as Web Service)
 # ------------------------------------------------------------------
@@ -112,7 +115,12 @@ async def safe_copy(message, chat_id, text_to_send, max_retries=3):
             logger.error("Message was deleted or invalid before we could copy it.")
             return None
         except Exception as e:
-            logger.error(f"Failed to copy message: {e}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                logger.warning(f"Copy attempt {attempt+1} failed: {e}. Retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                continue
+            logger.error(f"Failed to copy message after {max_retries} attempts: {e}")
             break
             
     await send_error_alert("Telegram Post Fail", f"Failed to post deal after {max_retries} retries.")
@@ -313,8 +321,11 @@ async def main():
         while True:
             if worker_task.done():
                 exc = worker_task.exception()
-                logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
-                await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
+                if exc is not None:
+                    logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
+                    await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
+                else:
+                    logger.warning("Queue Worker stopped normally. Restarting.")
                 worker_task = asyncio.create_task(queue_worker())
             await asyncio.sleep(30)
             

@@ -19,18 +19,20 @@ class RateLimiter:
         
         self.calls_in_batch = 0
         self._lock = asyncio.Lock()
+        self._sem = asyncio.Semaphore(1)
 
     async def acquire(self):
-        # 1. Base wait between every link to avoid triggering basic limits
-        await asyncio.sleep(self.wait_between)
-        
-        should_cooldown = False
-        
-        async with self._lock:
-            self.calls_in_batch += 1
-            if self.calls_in_batch >= self.batch_limit:
-                self.calls_in_batch = 0  # Reset for the next batch
-                should_cooldown = True
+        async with self._sem:
+            # 1. Base wait between every link to avoid triggering basic limits
+            await asyncio.sleep(self.wait_between)
+            
+            should_cooldown = False
+            
+            async with self._lock:
+                self.calls_in_batch += 1
+                if self.calls_in_batch >= self.batch_limit:
+                    self.calls_in_batch = 0  # Reset for the next batch
+                    should_cooldown = True
                 
         # Wait OUTSIDE the lock so we don't freeze the entire queue processing
         if should_cooldown:
@@ -128,33 +130,35 @@ class WishlinkProvider:
         self.api_url = "https://api.wishlink.com/api/c/convertSingleProductLink"
         self.id_token = None
         self.id_token_expires_at = 0
+        self._token_lock = asyncio.Lock()
 
     async def ensure_token(self):
         """Refreshes Firebase ID token if expired or missing"""
         import time
-        if self.id_token and time.time() < self.id_token_expires_at - 300: # 5 min buffer
-            return True
-            
-        if not WISHLINK_REFRESH_TOKEN or not FIREBASE_API_KEY:
-            logger.error("Missing Wishlink credentials (FIREBASE_API_KEY or WISHLINK_REFRESH_TOKEN)")
-            return False
-
-        auth_url = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
-        payload = {"grant_type": "refresh_token", "refresh_token": WISHLINK_REFRESH_TOKEN}
-        
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(auth_url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                self.id_token = data.get("id_token")
-                expires_in = int(data.get("expires_in", 3600))
-                self.id_token_expires_at = time.time() + expires_in
-                logger.info("Successfully refreshed Wishlink Auth Token")
+        async with self._token_lock:
+            if self.id_token and time.time() < self.id_token_expires_at - 300: # 5 min buffer
                 return True
-        except Exception as e:
-            logger.error(f"Failed to refresh Wishlink token: {e}")
-            return False
+                
+            if not WISHLINK_REFRESH_TOKEN or not FIREBASE_API_KEY:
+                logger.error("Missing Wishlink credentials (FIREBASE_API_KEY or WISHLINK_REFRESH_TOKEN)")
+                return False
+
+            auth_url = f"https://securetoken.googleapis.com/v1/token?key={FIREBASE_API_KEY}"
+            payload = {"grant_type": "refresh_token", "refresh_token": WISHLINK_REFRESH_TOKEN}
+            
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(auth_url, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    self.id_token = data.get("id_token")
+                    expires_in = int(data.get("expires_in", 3600))
+                    self.id_token_expires_at = time.time() + expires_in
+                    logger.info("Successfully refreshed Wishlink Auth Token")
+                    return True
+            except Exception as e:
+                logger.error(f"Failed to refresh Wishlink token: {e}")
+                return False
 
     @with_retry(retries=3, base_wait=2.0)
     async def _convert(self, url: str) -> dict:
