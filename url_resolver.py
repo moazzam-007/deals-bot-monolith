@@ -3,6 +3,7 @@ import hashlib
 import logging
 from urllib.parse import urlparse, parse_qs
 import httpx
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,18 @@ class URLResolver:
             )
         }
         self._client = None
+        self._lock = asyncio.Lock()
 
     async def get_client(self):
         """Returns a globally shared connection pool (httpx.AsyncClient)"""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers=self.headers,
-                follow_redirects=True,
-                timeout=8.0
-            )
-        return self._client
+        async with self._lock:
+            if self._client is None or self._client.is_closed:
+                self._client = httpx.AsyncClient(
+                    headers=self.headers,
+                    follow_redirects=True,
+                    timeout=8.0
+                )
+            return self._client
         
     async def close(self):
         if self._client and not self._client.is_closed:

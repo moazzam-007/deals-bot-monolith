@@ -75,7 +75,7 @@ async def send_error_alert(error_type: str, msg: str):
     error_alert_cooldowns[error_type] = now
     alert_target = ADMIN_ID if ADMIN_ID else "me"
     try:
-        await app.send_message(alert_target, f"🚨 **{error_type}**\n\n{msg}")
+        await app.send_message(alert_target, f"🚨 **{error_type}**\n\n{msg}", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Failed to send alert to {alert_target}: {e}")
 
@@ -219,7 +219,10 @@ async def process_single_message(message, album_messages=None):
             
         # Enforce Telegram's 1024 char caption limit for media messages
         if message.media and len(html_payload) > 1024:
-            html_payload = html_payload[:1020] + "..."
+            truncated = html_payload[:1020]
+            if truncated.count('<a') > truncated.count('</a'):
+                truncated = truncated[:truncated.rfind('<a')]
+            html_payload = truncated.strip() + "..."
             
         # 3. Post to Output Channel
         result = None
@@ -320,7 +323,11 @@ async def main():
         nonlocal worker_task
         while True:
             if worker_task.done():
-                exc = worker_task.exception()
+                try:
+                    exc = worker_task.exception()
+                except asyncio.CancelledError:
+                    exc = None
+                    
                 if exc is not None:
                     logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
                     await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")

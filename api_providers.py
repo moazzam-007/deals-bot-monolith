@@ -26,18 +26,14 @@ class RateLimiter:
             # 1. Base wait between every link to avoid triggering basic limits
             await asyncio.sleep(self.wait_between)
             
-            should_cooldown = False
-            
             async with self._lock:
                 self.calls_in_batch += 1
                 if self.calls_in_batch >= self.batch_limit:
                     self.calls_in_batch = 0  # Reset for the next batch
-                    should_cooldown = True
-                
-        # Wait OUTSIDE the lock so we don't freeze the entire queue processing
-        if should_cooldown:
-            logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
-            await asyncio.sleep(self.cooldown_seconds)
+                    # Wait INSIDE the sem but outside the main processing loop 
+                    # so we block all incoming queue items
+                    logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
+                    await asyncio.sleep(self.cooldown_seconds)
 
 
 def with_retry(retries=3, base_wait=2.0):
