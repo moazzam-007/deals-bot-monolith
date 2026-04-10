@@ -4,6 +4,14 @@ import asyncio
 import logging
 import html as html_lib
 from aiohttp import web
+
+# Pyrogram fix for Python 3.14+ (creates event loop before import)
+import asyncio
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, ChatForwardsRestricted, MessageIdInvalid
