@@ -181,7 +181,12 @@ async def process_single_message(message, album_messages=None):
             return # No URLs in this post
             
         # Get raw HTML representation of the message to safely replace URLs without breaking markup
-        html_payload = message.html if message.html else raw_text
+        if getattr(message, 'text', None) and hasattr(message.text, 'html'):
+            html_payload = message.text.html
+        elif getattr(message, 'caption', None) and hasattr(message.caption, 'html'):
+            html_payload = message.caption.html
+        else:
+            html_payload = getattr(message, 'html', None) or raw_text
         
         url_updates = []
         is_new_deal = False
