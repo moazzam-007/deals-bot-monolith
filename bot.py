@@ -357,6 +357,15 @@ async def main():
     me = await app.get_me()
     logger.info(f"Bot authenticated successfully as: {me.username}")
     
+    # Cache peers to fix "Peer id invalid" for in-memory sessions
+    try:
+        logger.info("Warming up peer cache from dialogs...")
+        async for _ in app.get_dialogs(limit=200):
+            pass
+        logger.info("Peer cache populated.")
+    except Exception as e:
+        logger.warning(f"Failed to load peer cache: {e}")
+    
     # Run forever
     await asyncio.Event().wait()
     

@@ -15,7 +15,8 @@ SHORTENED_DOMAINS = [
     "bittli.in", "bitli.in",
     "bit.ly", "tinyurl.com",
     "ekaro.in", "earnkaro.com",
-    "cutt.ly", "cuttli.in", "bitly.cx", "web.lehlah.club"
+    "cutt.ly", "cuttli.in", "bitly.cx", "web.lehlah.club",
+    "linkredirect.in",
 ]
 
 # E-commerce domains we care about
@@ -136,6 +137,14 @@ class URLResolver:
                  response = await client.get(url)
             
             final = str(response.url)
+            
+            # Extract target from linkredirect.in/Earnkaro which blocks HTTPX with 403 Forbidden
+            if "linkredirect.in" in final or "earnkaro.com" in final:
+                from urllib.parse import parse_qs, unquote
+                qs = parse_qs(urlparse(final).query)
+                if "dl" in qs:
+                    final = unquote(qs["dl"][0])
+            
             logger.info(f"Resolved {url} -> {final}")
             return final
         except Exception as e:
