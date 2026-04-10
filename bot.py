@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import logging
+import html as html_lib
 from aiohttp import web
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
@@ -98,8 +99,12 @@ async def safe_copy(message, chat_id, text_to_send, max_retries=3):
                     parse_mode=ParseMode.HTML
                 )
         except FloodWait as e:
-            logger.warning(f"FloodWait hit! Sleeping {e.value + 1}s")
-            await asyncio.sleep(e.value + 1)
+            if e.value > 300: # If Telegram demands > 5 mins, skip to prevent stalling queue
+                logger.error(f"FloodWait too long ({e.value}s). Skipping message.")
+                await send_error_alert("FloodWait", f"Skipped msg due to {e.value}s FloodWait")
+                return None
+            logger.warning(f"FloodWait hit! Sleeping {e.value + 2}s")
+            await asyncio.sleep(e.value + 2)
         except ChatForwardsRestricted:
             logger.info(f"Chat {message.chat.id} is Restricted! Falling back to manual download.")
             return await force_restricted_copy(message, chat_id, text_to_send)
@@ -113,10 +118,19 @@ async def safe_copy(message, chat_id, text_to_send, max_retries=3):
     await send_error_alert("Telegram Post Fail", f"Failed to post deal after {max_retries} retries.")
     return None
 
+def get_file_size(message):
+    for attr in ['video', 'document', 'audio', 'animation']:
+        obj = getattr(message, attr, None)
+        if obj and hasattr(obj, 'file_size') and obj.file_size:
+            return obj.file_size
+    if message.photo:
+        return getattr(message.photo, 'file_size', 0) or 5 * 1024 * 1024  # Assume 5MB if pyrogram omits it
+    return 0
+
 async def force_restricted_copy(message, chat_id, text_to_send):
     """Fallback: Stream media to disk, upload, delete. Only allows files < 20MB."""
     import gc
-    file_size = getattr(message.video, 'file_size', 0) or getattr(message.photo, 'file_size', 0) or 0
+    file_size = get_file_size(message)
     if file_size > 20 * 1024 * 1024:
         logger.warning(f"Skipping restricted media > 20MB. Sending text only.")
         return await app.send_message(chat_id, text_to_send, parse_mode=ParseMode.HTML)
@@ -140,7 +154,7 @@ async def force_restricted_copy(message, chat_id, text_to_send):
 # ------------------------------------------------------------------
 # 3. Message Processing Logic
 # ------------------------------------------------------------------
-async def process_single_message(message):
+async def process_single_message(message, album_messages=None):
     try:
         raw_text = message.text or message.caption or ""
         
@@ -155,6 +169,7 @@ async def process_single_message(message):
         
         url_updates = []
         is_new_deal = False
+        valid_product_ids = []
         
         # Process each URL found in the message
         for original_url in urls:
@@ -165,12 +180,13 @@ async def process_single_message(message):
             res = await url_resolver.process_url(original_url)
             product_id = res.get("product_id")
             
-            # Duplicate check using SQLite database
-            if db.is_duplicate(product_id):
+            # Duplicate check using aiosqlite database
+            if await db.seen(product_id):
                 logger.info(f"Duplicate detected: {product_id}. Skipping URL.")
                 continue 
                 
             is_new_deal = True
+            valid_product_ids.append(product_id)
             
             # API Routing & Conversion
             api_res = await convert_url(res["resolved_url"], res["platform"])
@@ -187,20 +203,42 @@ async def process_single_message(message):
             
         # 2. Rebuild the Caption
         # Instead of generic regex replacements that break HTML, replace specific matched strings
+        # Also correctly handle &amp; encoded URLs in message.html
         for old_u, new_u in url_updates:
-            html_payload = html_payload.replace(old_u, new_u)
+            encoded_old = html_lib.escape(old_u)
+            html_payload = html_payload.replace(encoded_old, new_u)
+            html_payload = html_payload.replace(old_u, new_u) # Fallback for unencoded
             
         # Enforce Telegram's 1024 char caption limit for media messages
         if message.media and len(html_payload) > 1024:
             html_payload = html_payload[:1020] + "..."
             
         # 3. Post to Output Channel
-        await safe_copy(message, OUTPUT_CHANNEL_ID, html_payload)
-        logger.info(f"Successfully processed & posted message ID {message.id}")
+        result = None
+        if album_messages:
+            # Forward the whole album correctly
+            captions = [html_payload] + [""] * (len(album_messages) - 1)
+            try:
+                result = await app.copy_media_group(
+                    chat_id=OUTPUT_CHANNEL_ID,
+                    from_chat_id=album_messages[0].chat.id,
+                    message_id=album_messages[0].id,
+                    captions=captions
+                )
+            except Exception as e:
+                logger.error(f"Album copy failed: {e}. Falling back to single.")
+                result = await safe_copy(message, OUTPUT_CHANNEL_ID, html_payload)
+        else:
+            result = await safe_copy(message, OUTPUT_CHANNEL_ID, html_payload)
+            
+        # 4. Only Commit to DB if Send succeeded
+        if result:
+            for pid in valid_product_ids:
+                await db.mark_posted(pid)
+            logger.info(f"Successfully processed & posted message ID {message.id}")
         
     except Exception as e:
         logger.exception(f"Unhandled exception processing message {message.id}: {e}")
-
 
 async def queue_worker():
     """Background task pulling from queue and processing sequentially."""
@@ -212,17 +250,9 @@ async def queue_worker():
             # Handle list of grouped messages (Albums)
             if isinstance(item, list):
                 logger.info(f"Processing Media Group with {len(item)} items.")
-                # Dedupe check on the FIRST item in the group that has a caption
+                # We process the first item that has a caption
                 main_msg = next((m for m in item if m.caption), item[0])
-                await process_single_message(main_msg)
-                
-                # The remaining items in an album have no caption. But we must send them
-                # so the album isn't broken. Telegram copy_message doesn't natively copy 
-                # a whole media group as an album. 
-                # *Note: Pyrogram copy_media_group natively handles this. 
-                # Let's simplify and just forward the entire album as a native copy stream if possible.
-                # Since dealing with multi-photo replacement is extremely complex for a monolithic simple bot,
-                # we just process the caption holder. 
+                await process_single_message(main_msg, album_messages=item)
             else:
                 await process_single_message(item)
                 
@@ -232,6 +262,7 @@ async def queue_worker():
         except Exception as e:
              logger.error(f"Worker crashed on item: {e}")
 
+
 # ------------------------------------------------------------------
 # 4. Message Listeners (Media Buffering handling)
 # ------------------------------------------------------------------
@@ -239,12 +270,10 @@ async def flush_media_group(group_id: str, delay: float = 2.0):
     await asyncio.sleep(delay)
     messages = media_group_buffer.pop(group_id, [])
     if messages:
-        # Instead of putting all, we only queue the first one that has a caption.
-        # This prevents destroying the duplicate checks but sacrifices multi-photo linking temporarily.
-        # A true media_group affiliate builder is an advanced feature.
+        # Sort to ensure order matches original post
+        messages.sort(key=lambda m: m.id)
         try:
-            main_msg = next((m for m in messages if getattr(m, 'caption', None)), messages[0])
-            processing_queue.put_nowait(main_msg)
+            processing_queue.put_nowait(messages)
         except asyncio.QueueFull:
             pass
 
@@ -273,10 +302,23 @@ async def handle_new_message(client, message):
 # ------------------------------------------------------------------
 async def main():
     logger.info("Initializing system...")
+    await db.init_db()
     await start_web_server()
     
-    # Start the worker task
+    # Start the worker task guarded by Watchdog
     worker_task = asyncio.create_task(queue_worker())
+    
+    async def guard_worker():
+        nonlocal worker_task
+        while True:
+            if worker_task.done():
+                exc = worker_task.exception()
+                logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
+                await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
+                worker_task = asyncio.create_task(queue_worker())
+            await asyncio.sleep(30)
+            
+    asyncio.create_task(guard_worker())
     
     # Start Pyrogram
     logger.info("Starting Pyrogram bot...")
@@ -289,6 +331,7 @@ async def main():
     
     await app.stop()
     worker_task.cancel()
+    await url_resolver.close()
 
 if __name__ == "__main__":
     try:

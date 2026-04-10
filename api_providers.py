@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import httpx
+import functools
 from config import LEHLAH_COOKIE, WISHLINK_REFRESH_TOKEN, FIREBASE_API_KEY
 import config
 
@@ -20,20 +21,27 @@ class RateLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self):
+        # 1. Base wait between every link to avoid triggering basic limits
+        await asyncio.sleep(self.wait_between)
+        
+        should_cooldown = False
+        
         async with self._lock:
-            # 1. Base wait between every link to avoid triggering basic limits
-            await asyncio.sleep(self.wait_between)
-            
             self.calls_in_batch += 1
-            if self.calls_in_batch > self.batch_limit:
-                logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
-                await asyncio.sleep(self.cooldown_seconds)
-                self.calls_in_batch = 1  # Reset batch, this is the first of the new batch
+            if self.calls_in_batch >= self.batch_limit:
+                self.calls_in_batch = 0  # Reset for the next batch
+                should_cooldown = True
+                
+        # Wait OUTSIDE the lock so we don't freeze the entire queue processing
+        if should_cooldown:
+            logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
+            await asyncio.sleep(self.cooldown_seconds)
 
 
 def with_retry(retries=3, base_wait=2.0):
     """Decorator for exponential backoff on API calls"""
     def decorator(func):
+        @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             for attempt in range(1, retries + 1):
                 try:

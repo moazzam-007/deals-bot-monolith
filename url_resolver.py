@@ -3,7 +3,6 @@ import hashlib
 import logging
 from urllib.parse import urlparse, parse_qs
 import httpx
-import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,6 @@ def _any_domain_matches(netloc, domain_list):
 
 class URLResolver:
     def __init__(self):
-        # We share one async client to pool connections safely
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -59,6 +57,21 @@ class URLResolver:
                 "Chrome/123.0.0.0 Safari/537.36"
             )
         }
+        self._client = None
+
+    async def get_client(self):
+        """Returns a globally shared connection pool (httpx.AsyncClient)"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                headers=self.headers,
+                follow_redirects=True,
+                timeout=8.0
+            )
+        return self._client
+        
+    async def close(self):
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     # ------------------------------------------------------------------
     # URL extraction from message text AND entities
@@ -113,16 +126,15 @@ class URLResolver:
             if not _any_domain_matches(netloc, SHORTENED_DOMAINS):
                 return url
                 
-            # httpx non-blocking request
-            async with httpx.AsyncClient(headers=self.headers, follow_redirects=True, timeout=8.0) as client:
-                response = await client.head(url)
-                # Some sites block HEAD requests, fallback to GET
-                if response.status_code >= 400 and response.status_code != 405:
-                     response = await client.get(url)
-                
-                final = str(response.url)
-                logger.info(f"Resolved {url} -> {final}")
-                return final
+            client = await self.get_client()
+            response = await client.head(url)
+            # Some sites block HEAD requests, fallback to GET
+            if response.status_code >= 400 and response.status_code != 405:
+                 response = await client.get(url)
+            
+            final = str(response.url)
+            logger.info(f"Resolved {url} -> {final}")
+            return final
         except Exception as e:
             logger.warning(f"Failed to resolve async {url}: {e}")
             return url
