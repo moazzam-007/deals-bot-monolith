@@ -371,6 +371,18 @@ async def main():
         logger.info("Peer cache populated.")
     except Exception as e:
         logger.warning(f"Failed to load peer cache: {e}")
+
+    # Explicitly open each monitored channel so Pyrogram starts receiving their updates
+    logger.info(f"Activating {len(CHANNELS)} monitored channels...")
+    activated = 0
+    for ch_id in CHANNELS:
+        try:
+            await app.get_chat(ch_id)
+            activated += 1
+        except Exception as e:
+            logger.warning(f"Could not activate channel {ch_id}: {e}")
+    logger.info(f"Activated {activated}/{len(CHANNELS)} channels. Bot ready!")
+
     
     # Run forever
     await asyncio.Event().wait()
