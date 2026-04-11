@@ -52,32 +52,35 @@ def _any_domain_matches(netloc, domain_list):
     return any(_domain_matches(netloc, d) for d in domain_list)
 
 
-# Tracking params that should be stripped before sending to affiliate APIs
-_TRACKING_PARAMS = {
+# Tracking params to strip universally
+_UNIVERSAL_TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "otracker", "otracker1", "otracker2",
     "affid", "affextparam1", "affextparam2",
-    "tag",          # Amazon affiliate tag (we replace with our own)
-    "ref", "ref_",
-    "s",            # Amazon sort param (sometimes tracking)
-    "qid",          # Amazon query ID
-    "ds",           # Amazon dataset param
+    "tag",          # Amazon/others affiliate tag (we replace with our own)
+    "ref",
     "source", "source_tag",
     "clickid", "click_id",
     "sub1", "sub2", "sub3",
 }
 
+# Params that are tracking-specific ONLY on Amazon (safe to strip there, may be legit elsewhere)
+_AMAZON_ONLY_TRACKING_PARAMS = {
+    "s",    # Amazon sort/search param
+    "qid",  # Amazon query ID
+    "ds",   # Amazon dataset param
+    "ref_",
+}
+
 def clean_url(url: str) -> str:
-    """Strip tracking/affiliate params. Keep only product-essential params."""
+    """Strip tracking params. Amazon-specific params only stripped on Amazon URLs."""
     try:
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
         parsed = urlparse(url)
         qs = parse_qs(parsed.query, keep_blank_values=False)
-        # Keep only params that are NOT tracking junk
-        clean_qs = {
-            k: v for k, v in qs.items()
-            if k.lower() not in _TRACKING_PARAMS
-        }
+        is_amazon = "amazon" in parsed.netloc.lower()
+        params_to_strip = _UNIVERSAL_TRACKING_PARAMS | (_AMAZON_ONLY_TRACKING_PARAMS if is_amazon else set())
+        clean_qs = {k: v for k, v in qs.items() if k.lower() not in params_to_strip}
         new_query = urlencode(clean_qs, doseq=True)
         clean = urlunparse((
             parsed.scheme, parsed.netloc, parsed.path,
@@ -163,6 +166,9 @@ class URLResolver:
     # ------------------------------------------------------------------
     async def _resolve_lehlah_short(self, url: str) -> str:
         """Call Lehlah's redirection API to get the original product URL from web.lehlah.club/s/SHORTCODE."""
+        if not LEHLAH_COOKIE:
+            logger.warning("LEHLAH_COOKIE missing — cannot resolve Lehlah short link. Returning as-is.")
+            return url
         try:
             match = re.search(r'/s/([a-zA-Z0-9]+)', url)
             if not match:
@@ -324,13 +330,11 @@ class URLResolver:
             return "unknown"
 
         platform_map = {
-            # --- LEHLAH PLATFORMS ---
-            "amazon":  ["amazon.in", "amazon.com", "amazon.co.uk"],
-            "meesho":  ["meesho.com"],
-            "ajio":    ["ajio.com"],
-            "shopsy":  ["shopsy.in"],
-            # --- WISHLINK PLATFORMS ---
-            "flipkart": ["flipkart.com"],
+            "amazon":   ["amazon.in", "amazon.com", "amazon.co.uk"],
+            "meesho":   ["meesho.com"],
+            "ajio":     ["ajio.com"],
+            "shopsy":   ["shopsy.in"],
+            "flipkart": ["flipkart.com", "dl.flipkart.com"],
             "myntra":   ["myntra.com"],
             "nykaa":    ["nykaa.com", "nykaafashion.com"],
             "snapdeal": ["snapdeal.com"],

@@ -11,29 +11,22 @@ logger = logging.getLogger(__name__)
 # RATE LIMITER (Per Provider) 
 # =======================================================
 class RateLimiter:
-    """Implement a 1s wait between conversions and 120s cooldown after batch limit."""
+    """1s wait between each call, cooldown after batch limit hit."""
     def __init__(self, batch_limit=5, cooldown_seconds=120, wait_between=1.0):
         self.batch_limit = batch_limit
         self.cooldown_seconds = cooldown_seconds
         self.wait_between = wait_between
-        
         self.calls_in_batch = 0
-        self._lock = asyncio.Lock()
-        self._sem = asyncio.Semaphore(1)
+        self._sem = asyncio.Semaphore(1)  # Ensures sequential API calls
 
     async def acquire(self):
         async with self._sem:
-            # 1. Base wait between every link to avoid triggering basic limits
             await asyncio.sleep(self.wait_between)
-            
-            async with self._lock:
-                self.calls_in_batch += 1
-                if self.calls_in_batch >= self.batch_limit:
-                    self.calls_in_batch = 0  # Reset for the next batch
-                    # Wait INSIDE the sem but outside the main processing loop 
-                    # so we block all incoming queue items
-                    logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
-                    await asyncio.sleep(self.cooldown_seconds)
+            self.calls_in_batch += 1
+            if self.calls_in_batch >= self.batch_limit:
+                self.calls_in_batch = 0
+                logger.info(f"RateLimiter: Hit batch limit ({self.batch_limit}). Cooling down for {self.cooldown_seconds}s...")
+                await asyncio.sleep(self.cooldown_seconds)
 
 
 def with_retry(retries=3, base_wait=2.0):
@@ -71,7 +64,7 @@ def with_retry(retries=3, base_wait=2.0):
 # =======================================================
 class LehlahProvider:
     def __init__(self):
-        self.limiter = RateLimiter(batch_limit=5, cooldown_seconds=60, wait_between=1.0)
+        self.limiter = RateLimiter(batch_limit=5, cooldown_seconds=120, wait_between=1.0)
         self.api_url = "https://creator.lehlah.club/api/campaign-url-builder"
         self.headers = {
             "Content-Type": "application/json",
