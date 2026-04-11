@@ -12,6 +12,7 @@ SHORTENED_DOMAINS = [
     "amzn.to", "a.co",
     "fkrt.it", "fkrt.cc",
     "myntr.it",
+    "ajiio.in",
     "bittli.in", "bitli.in",
     "bit.ly", "tinyurl.com",
     "ekaro.in", "earnkaro.com",
@@ -48,6 +49,42 @@ def _domain_matches(netloc, domain):
 def _any_domain_matches(netloc, domain_list):
     """Check if netloc matches any domain in the list."""
     return any(_domain_matches(netloc, d) for d in domain_list)
+
+
+# Tracking params that should be stripped before sending to affiliate APIs
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "otracker", "otracker1", "otracker2",
+    "affid", "affextparam1", "affextparam2",
+    "tag",          # Amazon affiliate tag (we replace with our own)
+    "ref", "ref_",
+    "s",            # Amazon sort param (sometimes tracking)
+    "qid",          # Amazon query ID
+    "ds",           # Amazon dataset param
+    "source", "source_tag",
+    "clickid", "click_id",
+    "sub1", "sub2", "sub3",
+}
+
+def clean_url(url: str) -> str:
+    """Strip tracking/affiliate params. Keep only product-essential params."""
+    try:
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query, keep_blank_values=False)
+        # Keep only params that are NOT tracking junk
+        clean_qs = {
+            k: v for k, v in qs.items()
+            if k.lower() not in _TRACKING_PARAMS
+        }
+        new_query = urlencode(clean_qs, doseq=True)
+        clean = urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, new_query, ""
+        ))
+        return clean.rstrip("?&")
+    except Exception:
+        return url
 
 
 class URLResolver:
@@ -233,16 +270,18 @@ class URLResolver:
             return "unknown"
 
         platform_map = {
-            "amazon": ["amazon.in", "amazon.com", "amazon.co.uk"],
+            # --- LEHLAH PLATFORMS ---
+            "amazon":  ["amazon.in", "amazon.com", "amazon.co.uk"],
+            "meesho":  ["meesho.com"],
+            "ajio":    ["ajio.com"],
+            "shopsy":  ["shopsy.in"],
+            # --- WISHLINK PLATFORMS ---
             "flipkart": ["flipkart.com"],
-            "myntra": ["myntra.com"],
-            "ajio": ["ajio.com"],
-            "meesho": ["meesho.com"],
-            "wishlink_others": [
-                "nykaa.com", "nykaafashion.com", 
-                "snapdeal.com", "jiomart.com", 
-                "tatacliq.com", "shopsy.in"
-            ]
+            "myntra":   ["myntra.com"],
+            "nykaa":    ["nykaa.com", "nykaafashion.com"],
+            "snapdeal": ["snapdeal.com"],
+            "jiomart":  ["jiomart.com"],
+            "tatacliq": ["tatacliq.com"],
         }
         for platform, domains in platform_map.items():
             if _any_domain_matches(domain, domains):
@@ -255,14 +294,15 @@ class URLResolver:
     async def process_url(self, url):
         """Complete async pipeline: resolve shortened URL, extract product ID, detect platform."""
         resolved = await self.resolve_url(url)
-        product_id = self.extract_product_id(resolved)
-        platform = self.detect_platform(resolved)
+        cleaned  = clean_url(resolved)          # strip tracking params
+        product_id = self.extract_product_id(cleaned)
+        platform   = self.detect_platform(cleaned)
 
         return {
             "original_url": url,
-            "resolved_url": resolved,
-            "product_id": product_id,
-            "platform": platform,
+            "resolved_url": cleaned,            # clean URL goes to affiliate API
+            "product_id":   product_id,
+            "platform":     platform,
         }
 
 url_resolver = URLResolver()

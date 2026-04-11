@@ -190,10 +190,12 @@ lehlah = LehlahProvider()
 wishlink = WishlinkProvider()
 
 async def convert_url(url: str, platform: str) -> dict:
-    """Smart router to balance load and prevent bans."""
-    if platform == "amazon":
-        logger.info(f"Routing {url} to Lehlah API")
+    """Smart router — Lehlah for Amazon/Meesho/Ajio/Shopsy, Wishlink for rest."""
+    LEHLAH_PLATFORMS = {"amazon", "meesho", "ajio", "shopsy"}
+    
+    if platform in LEHLAH_PLATFORMS:
+        logger.info(f"Routing [{platform}] {url} → Lehlah API")
         return await lehlah.convert(url)
     else:
-        logger.info(f"Routing {url} to Wishlink API")
+        logger.info(f"Routing [{platform}] {url} → Wishlink API")
         return await wishlink.convert(url)
