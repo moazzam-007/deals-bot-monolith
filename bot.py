@@ -213,11 +213,15 @@ async def process_single_message(message, album_messages=None):
             api_res = await convert_url(res["resolved_url"], res["platform"])
             if api_res.get("ok"):
                 affiliate_link = api_res["affiliate_link"]
-                # We save what to replace. Wait until all are converted to build the final string.
                 url_updates.append((original_url, affiliate_link))
             else:
-                logger.error(f"Failed to convert {original_url}: {api_res['error']}")
-                await send_error_alert("API Conversion Fail", f"URL: {original_url}\nErr: {api_res['error']}\nUsing original URL.")
+                err = api_res.get("error", "Unknown error")
+                logger.error(f"Conversion failed for {original_url}: {err}. Skipping post.")
+                await send_error_alert(
+                    "Conversion Fail — Post Skipped",
+                    f"URL: {original_url}\nPlatform: {res['platform']}\nErr: {err}"
+                )
+                return  # Skip post — don't publish others' affiliate links
         
         if not is_new_deal:
             return # The message had only duplicated products, skip the post

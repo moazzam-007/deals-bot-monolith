@@ -4,6 +4,7 @@ import logging
 from urllib.parse import urlparse, parse_qs
 import httpx
 import asyncio
+from config import LEHLAH_COOKIE
 
 logger = logging.getLogger(__name__)
 
@@ -158,30 +159,83 @@ class URLResolver:
             return False
 
     # ------------------------------------------------------------------
+    # Lehlah Short Link Resolver (API-based — extracts original product URL)
+    # ------------------------------------------------------------------
+    async def _resolve_lehlah_short(self, url: str) -> str:
+        """Call Lehlah's redirection API to get the original product URL from web.lehlah.club/s/SHORTCODE."""
+        try:
+            match = re.search(r'/s/([a-zA-Z0-9]+)', url)
+            if not match:
+                logger.warning(f"Lehlah short URL unexpected format: {url}")
+                return url
+
+            short_code = match.group(1)
+            api_url = "https://web.lehlah.club/api/redirection/generate-redirect-url-in-app-redirection"
+            payload = {
+                "short_code": short_code,
+                "referrer": "https://creator.lehlah.club/link-genie",
+                "is_in_app": False,
+                "is_telegram": False,
+                "is_youtube": False,
+                "is_instagram": False,
+                "is_ios": False,
+                "is_android": False,
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": "https://web.lehlah.club",
+                "Referer": "https://web.lehlah.club/",
+                "Cookie": LEHLAH_COOKIE,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36",
+            }
+            client = await self.get_client()
+            resp = await client.post(api_url, json=payload, headers=headers, timeout=15.0)
+            data = resp.json()
+            redirect_url = data.get("redirect_url")
+            if redirect_url:
+                logger.info(f"Lehlah short resolved: {url} → {redirect_url}")
+                return redirect_url
+            logger.warning(f"Lehlah short API returned no redirect_url for {url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Failed to resolve Lehlah short link {url}: {e}")
+            return url
+
+    # ------------------------------------------------------------------
     # Async Redirect Resolution
     # ------------------------------------------------------------------
     async def resolve_url(self, url):
         """Resolve shortened URLs by following redirects asyncly. Returns final URL."""
         try:
             netloc = urlparse(url).netloc.lower()
+
+            # Special: Lehlah short links need API-based resolution (not HTTP redirect)
+            if _domain_matches(netloc, "web.lehlah.club"):
+                return await self._resolve_lehlah_short(url)
+
             if not _any_domain_matches(netloc, SHORTENED_DOMAINS):
                 return url
-                
+
             client = await self.get_client()
             response = await client.head(url)
             # Some sites block HEAD requests, fallback to GET
             if response.status_code >= 400 and response.status_code != 405:
                  response = await client.get(url)
-            
+
             final = str(response.url)
-            
+
             # Extract target from linkredirect.in/Earnkaro which blocks HTTPX with 403 Forbidden
             if "linkredirect.in" in final or "earnkaro.com" in final:
                 from urllib.parse import parse_qs, unquote
                 qs = parse_qs(urlparse(final).query)
                 if "dl" in qs:
                     final = unquote(qs["dl"][0])
-            
+
+            # Second-level: if resolved to a Lehlah short link, extract original product URL
+            if _domain_matches(urlparse(final).netloc.lower(), "web.lehlah.club"):
+                final = await self._resolve_lehlah_short(final)
+
             logger.info(f"Resolved {url} -> {final}")
             return final
         except Exception as e:
