@@ -17,14 +17,16 @@ SHORTENED_DOMAINS = [
     "bittli.in", "bitli.in",
     "bit.ly", "tinyurl.com",
     "ekaro.in", "earnkaro.com",
-    "cutt.ly", "cuttli.in", "bitly.cx", "web.lehlah.club",
+    "cutt.ly", "cuttli.in", "bitly.cx",
+    "web.lehlah.club",
+    "buy.wishlink.com",   # Wishlink share links → HTTP redirect → original product URL
     "linkredirect.in",
 ]
 
 # E-commerce domains we care about
 ECOMMERCE_DOMAINS = [
     "amazon.in", "amazon.com", "amazon.co.uk",
-    "flipkart.com",
+    "flipkart.com", "dl.flipkart.com",
     "myntra.com",
     "ajio.com",
     "nykaa.com", "nykaafashion.com",
@@ -32,7 +34,7 @@ ECOMMERCE_DOMAINS = [
     "snapdeal.com",
     "jiomart.com",
     "tatacliq.com",
-    "shopsy.in",
+    "shopsy.in", "dl.shopsy.in",
 ]
 
 # Combined list for URL detection

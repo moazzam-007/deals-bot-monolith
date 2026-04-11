@@ -189,9 +189,9 @@ async def convert_url(url: str, platform: str) -> dict:
       - Everything else  → Lehlah (Myntra, Flipkart, Ajio, Meesho, Shopsy, Nykaa, etc.)
     Skip URLs that are already affiliate links (web.lehlah.club / buy.wishlink.com).
     """
-    # Already an affiliate link — do not re-convert
-    if "web.lehlah.club" in url or "buy.wishlink.com" in url:
-        logger.info(f"[{platform}] {url} is already an affiliate link. Using as-is.")
+    # Already a Lehlah affiliate link — do not re-convert
+    if "web.lehlah.club" in url:
+        logger.info(f"[{platform}] {url} is already a Lehlah affiliate link. Using as-is.")
         return {"ok": True, "affiliate_link": url}
 
     if platform == "amazon":
