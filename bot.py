@@ -361,9 +361,12 @@ async def main():
     logger.info(f"Bot authenticated successfully as: {me.username}")
     
     # Cache peers to fix "Peer id invalid" for in-memory sessions
+    # Must fetch BOTH main + archived folders (monitored channels are often archived)
     try:
         logger.info("Warming up peer cache from dialogs...")
-        async for _ in app.get_dialogs(limit=200):
+        async for _ in app.get_dialogs(limit=0):           # Main chats (limit=0 = all)
+            pass
+        async for _ in app.get_dialogs(folder_id=1, limit=0):  # Archived chats
             pass
         logger.info("Peer cache populated.")
     except Exception as e:
