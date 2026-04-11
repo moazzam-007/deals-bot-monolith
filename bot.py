@@ -180,12 +180,8 @@ async def process_single_message(message, album_messages=None):
             return # No URLs in this post
             
         # Get raw HTML representation of the message to safely replace URLs without breaking markup
-        if getattr(message, 'text', None) and hasattr(message.text, 'html'):
-            html_payload = message.text.html
-        elif getattr(message, 'caption', None) and hasattr(message.caption, 'html'):
-            html_payload = message.caption.html
-        else:
-            html_payload = getattr(message, 'html', None) or raw_text
+        # message.html gives HTML-formatted text (Pyrogram 2.x property)
+        html_payload = getattr(message, 'html', None) or raw_text
         
         url_updates = []
         is_new_deal = False
@@ -360,25 +356,44 @@ async def main():
     me = await app.get_me()
     logger.info(f"Bot authenticated successfully as: {me.username}")
     
-    # Cache peers to fix "Peer id invalid" for in-memory sessions
+    # Cache peers — NO limit (limit=0 in Pyrogram fetches only 1 page, not all)
     try:
         logger.info("Warming up peer cache from dialogs...")
-        async for _ in app.get_dialogs(limit=0):   # limit=0 = fetch ALL dialogs
-            pass
-        logger.info("Peer cache populated.")
+        count = 0
+        async for _ in app.get_dialogs():
+            count += 1
+        logger.info(f"Peer cache populated: {count} dialogs loaded.")
     except Exception as e:
         logger.warning(f"Failed to load peer cache: {e}")
 
-    # Explicitly open each monitored channel — 1s gap to avoid FloodWait
+    # Explicitly activate each monitored channel (1s gap to avoid FloodWait)
+    # Failed ones are retried after their required wait time
     logger.info(f"Activating {len(CHANNELS)} monitored channels...")
     activated = 0
+    failed_channels = []
+
     for ch_id in CHANNELS:
         try:
             await app.get_chat(ch_id)
             activated += 1
-            await asyncio.sleep(1)   # 1s delay — prevents Telegram FloodWait
+            await asyncio.sleep(1)
+        except FloodWait as e:
+            logger.warning(f"FloodWait {e.value}s for channel {ch_id}. Will retry later.")
+            failed_channels.append((ch_id, e.value))
         except Exception as e:
             logger.warning(f"Could not activate channel {ch_id}: {e}")
+
+    # Retry FloodWait channels after their required wait
+    for ch_id, wait_sec in failed_channels:
+        logger.info(f"Retrying channel {ch_id} after {wait_sec + 5}s...")
+        await asyncio.sleep(wait_sec + 5)
+        try:
+            await app.get_chat(ch_id)
+            activated += 1
+            logger.info(f"Retry success for channel {ch_id}")
+        except Exception as e:
+            logger.error(f"Retry also failed for {ch_id}: {e}")
+
     logger.info(f"Activated {activated}/{len(CHANNELS)} channels. Bot ready!")
 
  
