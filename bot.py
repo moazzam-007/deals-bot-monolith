@@ -6,7 +6,6 @@ import html as html_lib
 from aiohttp import web
 
 # Pyrogram fix for Python 3.14+ (creates event loop before import)
-import asyncio
 try:
     asyncio.get_event_loop()
 except RuntimeError:

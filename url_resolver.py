@@ -77,12 +77,12 @@ _AMAZON_ONLY_TRACKING_PARAMS = {
 def clean_url(url: str) -> str:
     """Strip tracking params. Amazon-specific params only stripped on Amazon URLs."""
     try:
-        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
         parsed = urlparse(url)
         qs = parse_qs(parsed.query, keep_blank_values=False)
         is_amazon = "amazon" in parsed.netloc.lower()
         params_to_strip = _UNIVERSAL_TRACKING_PARAMS | (_AMAZON_ONLY_TRACKING_PARAMS if is_amazon else set())
         clean_qs = {k: v for k, v in qs.items() if k.lower() not in params_to_strip}
+        from urllib.parse import urlencode, urlunparse
         new_query = urlencode(clean_qs, doseq=True)
         clean = urlunparse((
             parsed.scheme, parsed.netloc, parsed.path,
@@ -301,7 +301,7 @@ class URLResolver:
             if _any_domain_matches(domain, ["amazon.in", "amazon.com", "amazon.co.uk"]):
                 pid = self._extract_amazon_id(parsed)
                 if pid: return pid
-            elif _domain_matches(domain, "flipkart.com"):
+            elif _any_domain_matches(domain, ["flipkart.com", "dl.flipkart.com"]):
                 pid = self._extract_flipkart_id(parsed)
                 if pid: return pid
             elif _domain_matches(domain, "myntra.com"):
@@ -312,6 +312,9 @@ class URLResolver:
                 if pid: return pid
             elif _domain_matches(domain, "meesho.com"):
                 pid = self._extract_meesho_id(parsed)
+                if pid: return pid
+            elif _any_domain_matches(domain, ["shopsy.in", "dl.shopsy.in"]):
+                pid = self._extract_flipkart_id(parsed)  # Shopsy uses same PID format as Flipkart
                 if pid: return pid
 
             # Fallback: Hash of the cleaned URL ignoring tracking parameters
@@ -335,7 +338,7 @@ class URLResolver:
             "amazon":   ["amazon.in", "amazon.com", "amazon.co.uk"],
             "meesho":   ["meesho.com"],
             "ajio":     ["ajio.com"],
-            "shopsy":   ["shopsy.in"],
+            "shopsy":   ["shopsy.in", "dl.shopsy.in"],
             "flipkart": ["flipkart.com", "dl.flipkart.com"],
             "myntra":   ["myntra.com"],
             "nykaa":    ["nykaa.com", "nykaafashion.com"],

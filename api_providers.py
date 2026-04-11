@@ -184,19 +184,13 @@ wishlink = WishlinkProvider()
 
 async def convert_url(url: str, platform: str) -> dict:
     """
-    Smart router:
-      - Amazon           → Wishlink
-      - Everything else  → Lehlah (Myntra, Flipkart, Ajio, Meesho, Shopsy, Nykaa, etc.)
-    Skip URLs that are already affiliate links (web.lehlah.club / buy.wishlink.com).
+    All platforms → Lehlah API.
+    Skip URLs that are already Lehlah affiliate links (web.lehlah.club).
     """
     # Already a Lehlah affiliate link — do not re-convert
     if "web.lehlah.club" in url:
         logger.info(f"[{platform}] {url} is already a Lehlah affiliate link. Using as-is.")
         return {"ok": True, "affiliate_link": url}
 
-    if platform == "amazon":
-        logger.info(f"Routing [amazon] {url} → Wishlink API")
-        return await wishlink.convert(url)
-    else:
-        logger.info(f"Routing [{platform}] {url} → Lehlah API")
-        return await lehlah.convert(url)
+    logger.info(f"Routing [{platform}] {url} → Lehlah API")
+    return await lehlah.convert(url)
