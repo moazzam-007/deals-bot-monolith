@@ -361,29 +361,27 @@ async def main():
     logger.info(f"Bot authenticated successfully as: {me.username}")
     
     # Cache peers to fix "Peer id invalid" for in-memory sessions
-    # Must fetch BOTH main + archived folders (monitored channels are often archived)
     try:
         logger.info("Warming up peer cache from dialogs...")
-        async for _ in app.get_dialogs(limit=0):           # Main chats (limit=0 = all)
-            pass
-        async for _ in app.get_dialogs(folder_id=1, limit=0):  # Archived chats
+        async for _ in app.get_dialogs(limit=0):   # limit=0 = fetch ALL dialogs
             pass
         logger.info("Peer cache populated.")
     except Exception as e:
         logger.warning(f"Failed to load peer cache: {e}")
 
-    # Explicitly open each monitored channel so Pyrogram starts receiving their updates
+    # Explicitly open each monitored channel — 1s gap to avoid FloodWait
     logger.info(f"Activating {len(CHANNELS)} monitored channels...")
     activated = 0
     for ch_id in CHANNELS:
         try:
             await app.get_chat(ch_id)
             activated += 1
+            await asyncio.sleep(1)   # 1s delay — prevents Telegram FloodWait
         except Exception as e:
             logger.warning(f"Could not activate channel {ch_id}: {e}")
     logger.info(f"Activated {activated}/{len(CHANNELS)} channels. Bot ready!")
 
-    
+ 
     # Run forever
     await asyncio.Event().wait()
     
