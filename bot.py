@@ -433,29 +433,34 @@ async def main():
     async def guard_worker():
         nonlocal worker_task, poll_task, clean_task
         while True:
-            # -- Queue Worker --
-            if worker_task.done():
-                try:
-                    exc = worker_task.exception()
-                except asyncio.CancelledError:
-                    exc = None
-                if exc is not None:
-                    logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
-                    await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
-                else:
-                    logger.warning("Queue Worker stopped normally. Restarting.")
-                worker_task = asyncio.create_task(queue_worker())
+            try:
+                # -- Queue Worker --
+                if worker_task.done():
+                    try:
+                        exc = worker_task.exception()
+                    except asyncio.CancelledError:
+                        exc = None
+                    if exc is not None:
+                        logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
+                        await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
+                    else:
+                        logger.warning("Queue Worker stopped normally. Restarting.")
+                    worker_task = asyncio.create_task(queue_worker())
 
-            # -- Polling Loop --
-            if poll_task.done():
-                logger.warning("Polling loop died unexpectedly. Restarting.")
-                await send_error_alert("Polling Died", "Polling backup loop restarted.")
-                poll_task = asyncio.create_task(polling_loop())
+                # -- Polling Loop --
+                if poll_task.done():
+                    logger.warning("Polling loop died unexpectedly. Restarting.")
+                    await send_error_alert("Polling Died", "Polling backup loop restarted.")
+                    poll_task = asyncio.create_task(polling_loop())
 
-            # -- Cleanup Loop --
-            if clean_task.done():
-                logger.warning("Cleanup loop died unexpectedly. Restarting.")
-                clean_task = asyncio.create_task(cleanup_loop())
+                # -- Cleanup Loop --
+                if clean_task.done():
+                    logger.warning("Cleanup loop died unexpectedly. Restarting.")
+                    clean_task = asyncio.create_task(cleanup_loop())
+
+            except Exception as e:
+                # Guard worker itself must never die silently
+                logger.critical(f"Guard worker internal error: {e}")
 
             await asyncio.sleep(30)
 
