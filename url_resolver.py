@@ -75,15 +75,27 @@ _AMAZON_ONLY_TRACKING_PARAMS = {
 }
 
 def clean_url(url: str) -> str:
-    """Strip tracking params. Amazon-specific params only stripped on Amazon URLs."""
+    """Strip tracking params. Amazon-specific params only stripped on Amazon URLs.
+    
+    NOTE: Uses raw segment splitting (not parse_qs) to correctly handle URLs
+    where query values contain literal '&' characters (e.g. Myntra brand filters
+    like 'Steve & Anderson') that parse_qs would silently truncate.
+    """
     try:
+        from urllib.parse import urlunparse
         parsed = urlparse(url)
-        qs = parse_qs(parsed.query, keep_blank_values=False)
         is_amazon = "amazon" in parsed.netloc.lower()
         params_to_strip = _UNIVERSAL_TRACKING_PARAMS | (_AMAZON_ONLY_TRACKING_PARAMS if is_amazon else set())
-        clean_qs = {k: v for k, v in qs.items() if k.lower() not in params_to_strip}
-        from urllib.parse import urlencode, urlunparse
-        new_query = urlencode(clean_qs, doseq=True)
+
+        # Raw segment filtering — split on '&' and keep segments whose key is not a tracking param.
+        # This avoids parse_qs which mistakes literal '&' in values as a separator,
+        # causing Myntra brand filter params like 'f=Steve+%26+Anderson...' to get truncated.
+        kept = []
+        for seg in parsed.query.split('&'):
+            key = seg.split('=')[0].lower().strip()
+            if key and key not in params_to_strip:
+                kept.append(seg)
+        new_query = '&'.join(kept)
         clean = urlunparse((
             parsed.scheme, parsed.netloc, parsed.path,
             parsed.params, new_query, ""
@@ -357,7 +369,20 @@ class URLResolver:
     async def process_url(self, url):
         """Complete async pipeline: resolve shortened URL, extract product ID, detect platform."""
         resolved = await self.resolve_url(url)
-        cleaned  = clean_url(resolved)          # strip tracking params
+
+        # Normalize Meesho onelink → canonical meesho.com URL for stable dedup.
+        # Lehlah short links often resolve to meesho.onelink.me which contains
+        # an 'external_product_id' param — extract it for a stable product ID.
+        # Without this, two different short links for the same product would
+        # produce different URL hashes and bypass duplicate detection.
+        if "meesho.onelink.me" in resolved:
+            _qs = parse_qs(urlparse(resolved).query)
+            ext_id = _qs.get("external_product_id", [None])[0]
+            if ext_id:
+                resolved = f"https://www.meesho.com/s/p/{ext_id}"
+                logger.info(f"Meesho onelink normalized → {resolved}")
+
+        cleaned    = clean_url(resolved)        # strip tracking params
         product_id = self.extract_product_id(cleaned)
         platform   = self.detect_platform(cleaned)
 
