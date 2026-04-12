@@ -45,6 +45,10 @@ app = Client(
 if not CHANNELS:
     logger.warning("No CHANNELS configured! Bot will not monitor any channel.")
 
+# Set for O(1) manual channel check — bypasses Pyrogram's MIN_CHANNEL_ID bug
+# filters.chat(CHANNELS) silently fails for newer channel IDs (> -1002147483647)
+CHANNELS_SET = set(CHANNELS)
+
 # ------------------------------------------------------------------
 # 1. Server for Render Pinging (Prevents 15m spin-down if deployed as Web Service)
 # ------------------------------------------------------------------
@@ -300,8 +304,14 @@ async def flush_media_group(group_id: str, delay: float = 2.0):
         except asyncio.QueueFull:
             pass
 
-@app.on_message(filters.chat(CHANNELS))
+# filters.channel = only channel posts (not groups/DMs) — not affected by MIN_CHANNEL_ID bug
+# Then CHANNELS_SET does the exact ID match as plain Python (100% reliable)
+@app.on_message(filters.channel)
 async def handle_new_message(client, message):
+    # Manual check bypasses Pyrogram's broken MIN_CHANNEL_ID resolver
+    if not message.chat or message.chat.id not in CHANNELS_SET:
+        return
+
     if not OUTPUT_CHANNEL_ID:
         logger.warning("OUTPUT_CHANNEL_ID is not configured!")
         return
@@ -318,6 +328,71 @@ async def handle_new_message(client, message):
     except asyncio.QueueFull:
         logger.error("Queue is full! Dropping message to prevent OOM!")
         await send_error_alert("Queue Full", "Queue limit reached (500). Max capacity! Dropping messages.")
+
+
+# ------------------------------------------------------------------
+# 5. Polling Backup Loop (catches messages real-time handler may have missed)
+# ------------------------------------------------------------------
+async def polling_loop():
+    """Every 10 minutes: fetch latest 10 msgs from each monitored channel.
+    Uses SQLite watermarks to only process genuinely new messages.
+    Falls back gracefully on FloodWait."""
+    POLL_INTERVAL = 600   # 10 minutes
+    POLL_LIMIT    = 10    # max messages per channel per cycle
+
+    logger.info("Polling backup loop started. First run in 2 minutes.")
+    await asyncio.sleep(120)  # Let real-time handler settle first
+
+    while True:
+        total_queued = 0
+        logger.info("Polling cycle started...")
+        for ch_id in CHANNELS:
+            try:
+                watermark = await db.get_watermark(ch_id)
+                newest_id = watermark
+                msgs_to_queue = []
+
+                async for message in app.get_chat_history(ch_id, limit=POLL_LIMIT):
+                    if message.id <= watermark:
+                        break  # Older than our watermark — stop
+                    msgs_to_queue.append(message)
+                    if message.id > newest_id:
+                        newest_id = message.id
+
+                # Push in chronological order (oldest first) so queue processes correctly
+                for message in reversed(msgs_to_queue):
+                    try:
+                        processing_queue.put_nowait(message)
+                        total_queued += 1
+                    except asyncio.QueueFull:
+                        logger.warning("Queue full during polling. Skipping remaining.")
+                        break
+
+                # Save watermark so next cycle won't re-queue same messages
+                if newest_id > watermark:
+                    await db.set_watermark(ch_id, newest_id)
+
+                await asyncio.sleep(2)  # 2s gap between channels — prevents FloodWait
+
+            except FloodWait as e:
+                wait = min(e.value + 5, 60)  # Cap at 60s max per-channel wait
+                logger.warning(f"Polling FloodWait {e.value}s for {ch_id}. Waiting {wait}s.")
+                await asyncio.sleep(wait)
+            except Exception as e:
+                logger.warning(f"Polling error for channel {ch_id}: {e}")
+                continue
+
+        logger.info(f"Polling cycle done. Queued {total_queued} new messages. Next in 10 min.")
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+async def cleanup_loop():
+    """Daily: delete seen_ids older than 7 days to keep the SQLite DB small."""
+    logger.info("Daily cleanup loop started.")
+    await asyncio.sleep(86400)  # First run after 24 hours
+    while True:
+        await db.cleanup_old_seen(days=7)
+        await asyncio.sleep(86400)
 
 
 # ------------------------------------------------------------------
@@ -349,6 +424,8 @@ async def main():
             await asyncio.sleep(30)
             
     asyncio.create_task(guard_worker())
+    asyncio.create_task(polling_loop())
+    asyncio.create_task(cleanup_loop())
     
     # Start Pyrogram
     logger.info("Starting Pyrogram bot...")
