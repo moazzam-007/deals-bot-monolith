@@ -304,9 +304,9 @@ async def flush_media_group(group_id: str, delay: float = 2.0):
         except asyncio.QueueFull:
             pass
 
-# filters.channel = only channel posts (not groups/DMs) — not affected by MIN_CHANNEL_ID bug
-# Then CHANNELS_SET does the exact ID match as plain Python (100% reliable)
-@app.on_message(filters.channel)
+# filters.channel | filters.group — covers both channels AND supergroups (-1001... prefix)
+# CHANNELS_SET does exact ID match as plain Python (100% reliable, bypasses MIN_CHANNEL_ID bug)
+@app.on_message(filters.channel | filters.group)
 async def handle_new_message(client, message):
     # Manual check bypasses Pyrogram's broken MIN_CHANNEL_ID resolver
     if not message.chat or message.chat.id not in CHANNELS_SET:
@@ -336,13 +336,31 @@ async def handle_new_message(client, message):
 async def polling_loop():
     """Every 10 minutes: fetch latest 10 msgs from each monitored channel.
     Uses SQLite watermarks to only process genuinely new messages.
+    First run: initializes watermarks (no processing) to prevent deploy spam.
     Falls back gracefully on FloodWait."""
     POLL_INTERVAL = 600   # 10 minutes
     POLL_LIMIT    = 10    # max messages per channel per cycle
 
-    logger.info("Polling backup loop started. First run in 2 minutes.")
+    logger.info("Polling backup loop started. Initializing watermarks in 2 minutes...")
     await asyncio.sleep(120)  # Let real-time handler settle first
 
+    # --- First Run: Initialize watermarks only (no processing) ---
+    # Prevents deploy spam (350 old messages posted at once on fresh deploy)
+    logger.info("Polling: Initializing channel watermarks...")
+    for ch_id in CHANNELS:
+        try:
+            if await db.get_watermark(ch_id) == 0:
+                async for message in app.get_chat_history(ch_id, limit=1):
+                    await db.set_watermark(ch_id, message.id)
+                    logger.info(f"Watermark init: {ch_id} → msg {message.id}")
+            await asyncio.sleep(1)
+        except FloodWait as e:
+            await asyncio.sleep(min(e.value + 5, 60))
+        except Exception as e:
+            logger.warning(f"Watermark init failed for {ch_id}: {e}")
+    logger.info("Watermarks ready. Polling loop starting.")
+
+    # --- Main Polling Loop ---
     while True:
         total_queued = 0
         logger.info("Polling cycle started...")
@@ -359,9 +377,12 @@ async def polling_loop():
                     if message.id > newest_id:
                         newest_id = message.id
 
-                # Push in chronological order (oldest first) so queue processes correctly
+                # Push in chronological order (oldest first) — skip albums
+                # Albums need flush_media_group buffering; real-time handler handles them
                 for message in reversed(msgs_to_queue):
                     try:
+                        if message.media_group_id:
+                            continue  # Skip albums in polling
                         processing_queue.put_nowait(message)
                         total_queued += 1
                     except asyncio.QueueFull:
@@ -403,29 +424,42 @@ async def main():
     await db.init_db()
     await start_web_server()
     
-    # Start the worker task guarded by Watchdog
+    # Start all background tasks
     worker_task = asyncio.create_task(queue_worker())
-    
+    poll_task   = asyncio.create_task(polling_loop())
+    clean_task  = asyncio.create_task(cleanup_loop())
+
+    # Watchdog: guards queue_worker, polling_loop, AND cleanup_loop
     async def guard_worker():
-        nonlocal worker_task
+        nonlocal worker_task, poll_task, clean_task
         while True:
+            # -- Queue Worker --
             if worker_task.done():
                 try:
                     exc = worker_task.exception()
                 except asyncio.CancelledError:
                     exc = None
-                    
                 if exc is not None:
                     logger.critical(f"Queue Worker Died. Restarting. Cause: {exc}")
                     await send_error_alert("Worker Died", f"Restarting. Cause: {exc}")
                 else:
                     logger.warning("Queue Worker stopped normally. Restarting.")
                 worker_task = asyncio.create_task(queue_worker())
+
+            # -- Polling Loop --
+            if poll_task.done():
+                logger.warning("Polling loop died unexpectedly. Restarting.")
+                await send_error_alert("Polling Died", "Polling backup loop restarted.")
+                poll_task = asyncio.create_task(polling_loop())
+
+            # -- Cleanup Loop --
+            if clean_task.done():
+                logger.warning("Cleanup loop died unexpectedly. Restarting.")
+                clean_task = asyncio.create_task(cleanup_loop())
+
             await asyncio.sleep(30)
-            
+
     asyncio.create_task(guard_worker())
-    asyncio.create_task(polling_loop())
-    asyncio.create_task(cleanup_loop())
     
     # Start Pyrogram
     logger.info("Starting Pyrogram bot...")
