@@ -278,10 +278,22 @@ async def process_single_message(message, album_messages=None):
                         "secret": WA_API_SECRET
                     }
                     
+                    # Check if the message contains a photo, and convert it to base64
+                    import base64
+                    if message.photo:
+                        try:
+                            # Download photo into memory
+                            file_bytes = await app.download_media(message, in_memory=True)
+                            if file_bytes:
+                                wa_payload["image_base64"] = base64.b64encode(file_bytes.getvalue()).decode('utf-8')
+                        except Exception as dl_err:
+                            logger.error(f"Failed to download image for WhatsApp: {dl_err}")
+                    
                     # Ensure WA_BOT_URL doesn't end with a slash to prevent double slashes
                     wa_endpoint = WA_BOT_URL.rstrip('/') + "/send"
                     async with httpx.AsyncClient() as client:
-                        wa_resp = await client.post(wa_endpoint, json=wa_payload, timeout=15.0)
+                        # Increased timeout because image payloads can be a few MBs
+                        wa_resp = await client.post(wa_endpoint, json=wa_payload, timeout=30.0)
                         wa_resp.raise_for_status()
                         logger.info("Successfully forwarded deal to WhatsApp Channel!")
                 except Exception as wa_err:
