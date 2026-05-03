@@ -4,6 +4,7 @@ import asyncio
 import logging
 import html as html_lib
 from aiohttp import web
+import httpx
 
 # Pyrogram fix for Python 3.14+ (creates event loop before import)
 try:
@@ -15,7 +16,7 @@ from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait, ChatForwardsRestricted, MessageIdInvalid
 
-from config import API_ID, API_HASH, STRING_SESSION, CHANNELS, OUTPUT_CHANNEL_ID, ADMIN_ID, PORT
+from config import API_ID, API_HASH, STRING_SESSION, CHANNELS, OUTPUT_CHANNEL_ID, ADMIN_ID, PORT, WA_BOT_URL, WA_API_SECRET
 from url_resolver import url_resolver
 from database import db
 from api_providers import convert_url
@@ -263,6 +264,28 @@ async def process_single_message(message, album_messages=None):
             for pid in valid_product_ids:
                 await db.mark_posted(pid)
             logger.info(f"Successfully processed & posted message ID {message.id}")
+            
+            # 5. Forward to WhatsApp Channel Bot
+            if WA_BOT_URL:
+                try:
+                    # Use original raw text to preserve simple Markdown that WhatsApp understands
+                    whatsapp_text = raw_text
+                    for old_u, new_u in url_updates:
+                        whatsapp_text = whatsapp_text.replace(old_u, new_u)
+                    
+                    wa_payload = {
+                        "text": whatsapp_text,
+                        "secret": WA_API_SECRET
+                    }
+                    
+                    # Ensure WA_BOT_URL doesn't end with a slash to prevent double slashes
+                    wa_endpoint = WA_BOT_URL.rstrip('/') + "/send"
+                    async with httpx.AsyncClient() as client:
+                        wa_resp = await client.post(wa_endpoint, json=wa_payload, timeout=15.0)
+                        wa_resp.raise_for_status()
+                        logger.info("Successfully forwarded deal to WhatsApp Channel!")
+                except Exception as wa_err:
+                    logger.error(f"WhatsApp forwarding failed: {wa_err}")
         
     except Exception as e:
         logger.exception(f"Unhandled exception processing message {message.id}: {e}")
